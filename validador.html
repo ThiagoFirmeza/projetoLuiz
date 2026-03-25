@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Validador Fiscal RN - Filtro de Divergências</title>
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+    <style>
+        :root { --primary: #0056b3; --success: #28a745; --danger: #dc3545; --bg: #f4f7f6; }
+        body { font-family: 'Segoe UI', Tahoma, sans-serif; background: var(--bg); padding: 40px 20px; display: flex; flex-direction: column; align-items: center; }
+        .container { width: 100%; max-width: 1100px; background: white; padding: 35px; border-radius: 15px; box-shadow: 0 8px 30px rgba(0,0,0,0.1); text-align: center; }
+        h1 { color: #333; margin-bottom: 5px; }
+        .subtitle { color: #666; margin-bottom: 30px; font-size: 14px; }
+        
+        #drop-zone {
+            border: 3px dashed #cbd5e0; background: #fafafa; padding: 50px; border-radius: 12px;
+            cursor: pointer; transition: 0.3s; position: relative;
+        }
+        #drop-zone:hover { border-color: var(--primary); background: #f0f7ff; }
+        .btn-select { background: var(--primary); color: white; padding: 12px 25px; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; margin-top: 15px; }
+        #file-input { display: none; }
+
+        #status { margin: 25px 0; padding: 15px; border-radius: 8px; display: none; font-weight: 600; }
+        .loading { background: #fff3cd; color: #856404; }
+        .success-msg { background: #d4edda; color: #155724; }
+
+        .btn-download { background: var(--success); color: white; padding: 15px 35px; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; display: none; margin: 20px auto; box-shadow: 0 4px 15px rgba(40, 167, 69, 0.3); }
+        
+        .results-wrapper { margin-top: 30px; border: 1px solid #eee; border-radius: 10px; overflow: hidden; display: none; }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; text-align: left; }
+        th { background: #f8f9fa; padding: 12px; color: #555; border-bottom: 2px solid #eee; }
+        td { padding: 12px; border-bottom: 1px solid #eee; }
+        .badge { padding: 4px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; text-transform: uppercase; }
+        .badge-err { background: #f8d7da; color: #721c24; }
+        .highlight { color: var(--primary); font-weight: bold; }
+        .no-errors { padding: 40px; color: var(--success); font-weight: bold; font-size: 18px; }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h1>Validador Fiscal Rio Grande do Norte</h1>
+        <div class="subtitle">Análise focada em Divergências (NCM x cClassTrib)</div>
+
+        <div id="drop-zone" onclick="document.getElementById('file-input').click()">
+            <div style="font-size: 40px;">📂</div>
+            <p>Arraste o arquivo Excel (.xlsx) aqui ou clique para selecionar</p>
+            <button class="btn-select">Procurar Arquivo</button>
+            <input type="file" id="file-input" accept=".xlsx, .xls">
+        </div>
+
+        <div id="status"></div>
+        <button id="downloadBtn" class="btn-download">⬇️ BAIXAR PLANILHA COMPLETA COM CORREÇÕES</button>
+
+        <div class="results-wrapper" id="results-wrapper">
+            <div id="error-message-area" class="no-errors" style="display:none">🎉 Nenhuma divergência encontrada!</div>
+            <table id="table-results">
+                <thead>
+                    <tr>
+                        <th>Linha Excel</th>
+                        <th>NCM Original</th>
+                        <th>Class. Original</th>
+                        <th>Status</th>
+                        <th>NCM Sugerido</th>
+                        <th>Class. Sugerida</th>
+                    </tr>
+                </thead>
+                <tbody id="table-body"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        // BASE DE REGRAS RN (Exemplo)
+        const REGRAS_FISCAIS = {
+            "22030000": "01", "22021000": "01", "2201": "01",
+            "40111000": "03", "4011": "03", "8407": "03",
+            "3003": "04", "3004": "04",
+            "3303": "05", "3304": "05", "3305": "05",
+            "2402": "02"
+        };
+
+        const fileInput = document.getElementById('file-input');
+        const dropZone = document.getElementById('drop-zone');
+        const statusBar = document.getElementById('status');
+        const downloadBtn = document.getElementById('downloadBtn');
+        const resultsWrapper = document.getElementById('results-wrapper');
+        const tableBody = document.getElementById('table-body');
+        const tableResults = document.getElementById('table-results');
+        const noErrorsMsg = document.getElementById('error-message-area');
+
+        let dadosParaDownload = [];
+
+        function validarFiscal(ncmOriginal, classOriginal) {
+            const ncmLimpo = String(ncmOriginal || "").replace(/\D/g, "");
+            const classLimpa = String(classOriginal || "").trim();
+            
+            let classCorreta = classLimpa;
+            let divergente = false;
+
+            // Busca regra por NCM completo ou prefixo de 4 dígitos
+            if (REGRAS_FISCAIS[ncmLimpo]) {
+                classCorreta = REGRAS_FISCAIS[ncmLimpo];
+            } else if (REGRAS_FISCAIS[ncmLimpo.substring(0, 4)]) {
+                classCorreta = REGRAS_FISCAIS[ncmLimpo.substring(0, 4)];
+            }
+
+            // Se a classe correta for diferente da enviada, marca divergência
+            if (classCorreta !== classLimpa) {
+                divergente = true;
+            }
+
+            return { ncmCorreto: ncmLimpo, classCorreta, divergente };
+        }
+
+        fileInput.addEventListener('change', e => handleFile(e.target.files[0]));
+        dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('hover'); });
+        dropZone.addEventListener('dragleave', () => dropZone.classList.remove('hover'));
+        dropZone.addEventListener('drop', e => { e.preventDefault(); handleFile(e.dataTransfer.files[0]); });
+
+        function handleFile(file) {
+            if (!file) return;
+            statusBar.className = "loading";
+            statusBar.style.display = "block";
+            statusBar.innerText = "Processando milhares de produtos...";
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const data = new Uint8Array(e.target.result);
+                const workbook = XLSX.read(data, { type: 'array' });
+                const json = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
+                processar(json);
+            };
+            reader.readAsArrayBuffer(file);
+        }
+
+        function processar(dados) {
+            dadosParaDownload = [];
+            tableBody.innerHTML = "";
+            let errosCont = 0;
+
+            dados.forEach((row, index) => {
+                const ncm = row['NCM'] || row['ncm'] || row['Ncm'] || "";
+                const trib = row['cClassTrib'] || row['CClassTrib'] || row['cclasstrib'] || "";
+
+                const result = validarFiscal(ncm, trib);
+
+                const itemProcessado = {
+                    "Linha": index + 2,
+                    "NCM Original": ncm,
+                    "cClassTrib Original": trib,
+                    "Status": result.divergente ? "DIVERGENTE" : "OK",
+                    "NCM Sugerido": result.ncmCorreto,
+                    "cClassTrib Sugerido": result.classCorreta
+                };
+                
+                dadosParaDownload.push(itemProcessado);
+
+                // EXIBE NA TABELA APENAS SE TIVER ERRO
+                if (result.divergente) {
+                    errosCont++;
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td>${itemProcessado.Linha}</td>
+                        <td>${ncm}</td>
+                        <td>${trib}</td>
+                        <td><span class="badge badge-err">${itemProcessado.Status}</span></td>
+                        <td class="highlight">${result.ncmCorreto}</td>
+                        <td class="highlight">${result.classCorreta}</td>
+                    `;
+                    tableBody.appendChild(tr);
+                }
+            });
+
+            // Gerencia o que mostrar na tela
+            resultsWrapper.style.display = "block";
+            if (errosCont > 0) {
+                tableResults.style.display = "table";
+                noErrorsMsg.style.display = "none";
+                statusBar.className = "loading"; // Amarelo para atenção
+                statusBar.innerText = `Análise concluída: Encontradas ${errosCont} divergências em ${dados.length} produtos.`;
+            } else {
+                tableResults.style.display = "none";
+                noErrorsMsg.style.display = "block";
+                statusBar.className = "success-msg";
+                statusBar.innerText = `Análise concluída: Todos os ${dados.length} produtos estão corretos!`;
+            }
+            
+            downloadBtn.style.display = "block";
+        }
+
+        downloadBtn.addEventListener('click', () => {
+            const ws = XLSX.utils.json_to_sheet(dadosParaDownload);
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, "Relatorio_Fiscal");
+            XLSX.writeFile(wb, "Resultado_Validacao_RN.xlsx");
+        });
+    </script>
+</body>
+</html>
